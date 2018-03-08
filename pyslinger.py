@@ -6,28 +6,26 @@
 
 import ctypes
 import time
+import pigpio
 
 # This is the struct required by pigpio library.
 # We store the individual pulses and their duration here. (In an array of these structs.)
-class Pulses_struct(ctypes.Structure):
-    _fields_ = [("gpioOn", ctypes.c_uint32),
-                ("gpioOff", ctypes.c_uint32),
-                ("usDelay", ctypes.c_uint32)]
+Pulses_struct = pigpio.pulse
+# class Pulses_struct(ctypes.Structure):
+#     _fields_ = [("gpioOn", ctypes.c_uint32),
+#                 ("gpioOff", ctypes.c_uint32),
+#                 ("usDelay", ctypes.c_uint32)]
 
 # Since both NEC and RC-5 protocols use the same method for generating waveform,
 # it can be put in a separate class and called from both protocol's classes.
 class Wave_generator():
     def __init__(self,protocol):
         self.protocol = protocol
-        MAX_PULSES = 12000 # from pigpio.h
-        Pulses_array = Pulses_struct * MAX_PULSES
-        self.pulses = Pulses_array()
+        self.pulses = []
         self.pulse_count = 0
 
     def add_pulse(self, gpioOn, gpioOff, usDelay):
-        self.pulses[self.pulse_count].gpioOn = gpioOn
-        self.pulses[self.pulse_count].gpioOff = gpioOff
-        self.pulses[self.pulse_count].usDelay = usDelay
+        self.pulses.append(pigpio.pulse(gpioOn, gpioOff, usDelay))
         self.pulse_count += 1
 
     # Pull the specified output pin low
@@ -205,13 +203,11 @@ class IR():
     def __init__(self, gpio_pin, protocol, protocol_config):
         print("Starting IR")
         print("Loading libpigpio.so")
-        self.pigpio = ctypes.CDLL('libpigpio.so')
+        self.pigpio = pigpio.pi()
         print("Initializing pigpio")
-        PI_OUTPUT = 1 # from pigpio.h
-        self.pigpio.gpioInitialise()
         self.gpio_pin = gpio_pin
         print("Configuring pin %d as output" % self.gpio_pin)
-        self.pigpio.gpioSetMode(self.gpio_pin, PI_OUTPUT) # pin 17 is used in LIRC by default
+        self.pigpio.set_mode(gpio_pin, pigpio.OUTPUT)
         print("Initializing protocol")
         if protocol == "NEC":
             self.protocol = NEC(self, **protocol_config)
@@ -220,8 +216,8 @@ class IR():
         elif protocol == "RAW":
             self.protocol = RAW(self, **protocol_config)
         else:
-            print("Protocol not specified! Exiting...")
-            return 1
+            raise RuntimeError("Protocol not specified! Exiting...")
+
         print("IR ready")
 
     # send_code takes care of sending the processed IR code to pigpio.
@@ -232,19 +228,22 @@ class IR():
         if code != 0:
             print("Error in processing IR code!")
             return 1
-        clear = self.pigpio.gpioWaveClear()
+        clear = self.pigpio.wave_clear()
         if clear != 0:
             print("Error in clearing wave!")
             return 1
-        pulses = self.pigpio.gpioWaveAddGeneric(self.protocol.wave_generator.pulse_count, self.protocol.wave_generator.pulses)
+        # pulses = self.pigpio.gpioWaveAddGeneric(self.protocol.wave_generator.pulse_count, self.protocol.wave_generator.pulses)
+        pulses = self.pigpio.wave_add_generic(self.protocol.wave_generator.pulses)
         if pulses < 0:
             print("Error in adding wave!")
             return 1
-        wave_id = self.pigpio.gpioWaveCreate()
+        wave_id = self.pigpio.wave_create()
+        # wave_id = self.pigpio.gpioWaveCreate()
         # Unlike the C implementation, in Python the wave_id seems to always be 0.
         if wave_id >= 0:
             print("Sending wave...")
-            result = self.pigpio.gpioWaveTxSend(wave_id, 0)
+            # result = self.pigpio.gpioWaveTxSend(wave_id, 0)
+            result = self.pigpio.wave_send_once(wave_id)
             if result >= 0:
                 print("Success! (result: %d)" % result)
             else:
@@ -253,22 +252,25 @@ class IR():
         else:
             print("Error creating wave: %d" % wave_id)
             return 1
-        while self.pigpio.gpioWaveTxBusy():
+        while self.pigpio.wave_tx_busy():
             time.sleep(0.1)
+        # while self.pigpio.gpioWaveTxBusy():
+        #     time.sleep(0.1)
         print("Deleting wave")
-        self.pigpio.gpioWaveDelete(wave_id)
+        self.pigpio.wave_delete(wave_id)
+        # self.pigpio.gpioWaveDelete(wave_id)
         print("Terminating pigpio")
-        self.pigpio.gpioTerminate()
+        # self.pigpio.gpioTerminate()
+        self.pigpio.wave_clear()
 
 # Simply define the GPIO pin, protocol (NEC, RC-5 or RAW) and
 # override the protocol defaults with the dictionary if required.
 # Provide the IR code to the send_code() method.
 # An example is given below.
 if __name__ == "__main__":
-    protocol = "RC-5"
-    gpio_pin = 17
-    protocol_config = dict(one_duration = 820,
-                            zero_duration = 820)
+    protocol = "NEC"
+    gpio_pin = 7
+    protocol_config = dict(trailing_pulse=1)
     ir = IR(gpio_pin, protocol, protocol_config)
-    ir.send_code("11000000001100")
+    ir.send_code("0"*8 + "1"*8 + "0110000" + "10011111")
     print("Exiting IR")
